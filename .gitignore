@@ -1,0 +1,11 @@
+__pycache__/
+build/
+dist/
+*.spec
+.venv/
+.ruff_cache/
+uv.lock
+pull.log
+
+# Scraped meme library (large, regenerable via meme_scrapper/scrape.js)
+meme_scrapper/output/
