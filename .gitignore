@@ -6,6 +6,7 @@ dist/
 .ruff_cache/
 uv.lock
 pull.log
+.claude/
 
 # Scraped meme library (large, regenerable via meme_scrapper/scrape.js)
 meme_scrapper/output/

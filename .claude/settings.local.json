@@ -1,7 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(python -c \"print\\(open\\('main.py',encoding='utf-8'\\).read\\(\\)\\)\")"
-    ]
-  }
-}
