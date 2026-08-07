@@ -1,6 +1,6 @@
 import logging
 import tkinter as ttk
-from tkinter import Button, Entry, Label, colorchooser, filedialog, simpledialog
+from tkinter import Button, Frame, Label, Text, colorchooser, filedialog, simpledialog
 
 from PIL import Image, ImageGrab, ImageSequence, ImageTk
 
@@ -226,9 +226,12 @@ class TextColorDialog(simpledialog.Dialog):
         super().__init__(parent, title)
 
     def body(self, master):
-        Label(master, text="Enter your text:").grid(row=0, column=0, columnspan=2, sticky="w")
-        self.entry = Entry(master, width=32)
-        self.entry.insert(0, self.initial_text)
+        Label(master, text="Enter your text:").grid(
+            row=0, column=0, columnspan=2, sticky="w")
+        # A multi-line Text box so a meme caption can span several lines. The lines
+        # are centred on the canvas (see add_text) and in the saved image.
+        self.entry = Text(master, width=32, height=4, wrap="word")
+        self.entry.insert("1.0", self.initial_text)
         self.entry.grid(row=1, column=0, columnspan=2, pady=(0, 8))
 
         Label(master, text="Color:").grid(row=2, column=0, sticky="w", pady=(0, 4))
@@ -236,6 +239,19 @@ class TextColorDialog(simpledialog.Dialog):
                                    relief="raised", bd=3, command=self._pick_color)
         self.color_button.grid(row=2, column=1, sticky="w", pady=(0, 4))
         return self.entry  # initial focus on the text field
+
+    def buttonbox(self):
+        # Rebuild the OK/Cancel bar so that <Return> types a newline in the
+        # multi-line box instead of submitting; Ctrl+Return (or the OK button)
+        # confirms, Escape cancels.
+        box = Frame(self)
+        Button(box, text="OK", width=10, command=self.ok, default="active").pack(
+            side="left", padx=5, pady=5)
+        Button(box, text="Cancel", width=10, command=self.cancel).pack(
+            side="left", padx=5, pady=5)
+        box.pack()
+        self.bind("<Control-Return>", self.ok)
+        self.bind("<Escape>", self.cancel)
 
     def _pick_color(self):
         color = colorchooser.askcolor(title="Choose a color",
@@ -245,7 +261,8 @@ class TextColorDialog(simpledialog.Dialog):
             self.color_button.config(bg=color)
 
     def apply(self):
-        self.result = (self.entry.get(), self.chosen_color)
+        # "end-1c" drops the trailing newline Tk keeps at the end of a Text widget.
+        self.result = (self.entry.get("1.0", "end-1c"), self.chosen_color)
 
 
 def add_text(canvas: ttk.Canvas):
@@ -260,7 +277,8 @@ def add_text(canvas: ttk.Canvas):
         return
 
     text_obj = canvas.create_text(
-        100, 100, text=text, fill=color, font=(config.FONT_FAMILY, 20))
+        100, 100, text=text, fill=color, font=(config.FONT_FAMILY, 20),
+        justify="center")
     config.objects.append(TkObject(text_obj, text))
     canvas.tag_bind(text_obj, "<Double-Button-1>",
                     lambda event, obj=text_obj: edit_text(canvas, obj))

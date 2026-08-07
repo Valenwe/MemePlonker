@@ -253,11 +253,20 @@ class MemeBrowser:
         column = 0
 
         start = (self.page - 1) * self.per_page
+        skipped = 0
         for meme in self.processed_memes[start: start + self.per_page]:
-            cached = self.image_cache.get(meme.path)
+            # Cache by key presence (not truthiness) so an unreadable file, cached
+            # as None, is not re-opened on every page view.
+            if meme.path not in self.image_cache:
+                self.image_cache[meme.path] = self._load_thumbnail(meme.path)
+            cached = self.image_cache[meme.path]
+
+            # Skip memes whose image could not be loaded — e.g. a cloud/Synology
+            # file that has not been downloaded locally yet (_load_thumbnail logged
+            # the reason). The slot is left to the next loadable meme.
             if cached is None:
-                cached = self._load_thumbnail(meme.path)
-                self.image_cache[meme.path] = cached
+                skipped += 1
+                continue
 
             if isinstance(cached, tuple):  # animated GIF: (frames, durations)
                 frames, durations = cached
@@ -290,20 +299,33 @@ class MemeBrowser:
                 column = 0
                 row += 1
 
+        if skipped:
+            logger.warning("%i meme(s) on this page could not be displayed "
+                           "(image files unavailable — not downloaded yet?).", skipped)
+
     def _load_thumbnail(self, path: Path):
-        """Return a thumbnail: a PhotoImage, or (frames, durations) for a GIF."""
-        img = Image.open(path)
-        if getattr(img, "is_animated", False) and getattr(img, "n_frames", 1) > 1:
-            frames = []
-            durations = []
-            for frame in ImageSequence.Iterator(img):
-                thumb = frame.convert("RGBA")
-                thumb.thumbnail((self.image_size, self.image_size))
-                frames.append(ImageTk.PhotoImage(thumb))
-                durations.append(max(20, frame.info.get("duration", 100)))
-            return (frames, durations)
-        img.thumbnail((self.image_size, self.image_size))
-        return ImageTk.PhotoImage(img)
+        """Return a thumbnail (a PhotoImage, or (frames, durations) for a GIF).
+
+        Returns None if the image can't be read — e.g. a cloud/Synology file that
+        is only a placeholder locally and has not been downloaded yet. The caller
+        skips such memes so a single bad file never crashes the whole page.
+        """
+        try:
+            img = Image.open(path)
+            if getattr(img, "is_animated", False) and getattr(img, "n_frames", 1) > 1:
+                frames = []
+                durations = []
+                for frame in ImageSequence.Iterator(img):
+                    thumb = frame.convert("RGBA")
+                    thumb.thumbnail((self.image_size, self.image_size))
+                    frames.append(ImageTk.PhotoImage(thumb))
+                    durations.append(max(20, frame.info.get("duration", 100)))
+                return (frames, durations)
+            img.thumbnail((self.image_size, self.image_size))
+            return ImageTk.PhotoImage(img)
+        except (OSError, ValueError) as exc:
+            logger.warning("Could not load meme image '%s': %s", path, exc)
+            return None
 
     def _animate_thumb(self, label: Label, frames: list, durations: list, index: int):
         """Advance one animated thumbnail, rescheduling until its label is gone."""

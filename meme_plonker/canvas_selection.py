@@ -163,8 +163,12 @@ def resize_object(event, canvas: ttk.Canvas, obj_id: int, position: HandlePositi
             render_image(canvas, obj, fast=True)
 
     elif isinstance(obj.data, str):  # Resizing text: map the box height to a font size
+        # The bounding box spans every line, so divide by the line count to get the
+        # per-line height; otherwise multi-line text scales by N lines at once and
+        # the font runs away as you drag.
+        line_count = obj.data.count("\n") + 1
         new_height = max(10, new_height)
-        font_size = max(6, int(new_height / 1.3))
+        font_size = max(6, int(new_height / line_count / 1.3))
         canvas.itemconfig(obj_id, font=(config.FONT_FAMILY, font_size))
 
     else:

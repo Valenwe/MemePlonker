@@ -15,6 +15,7 @@ from meme_plonker.canvas_operations import (
     on_drag,
     on_paste,
     open_image,
+    refresh_panels,
 )
 from meme_plonker.canvas_selection import on_item_click
 from meme_plonker.config import WIN98_DESKTOP, WIN98_FACE, WIN98_TOOLTIP, Config, setup_widget
@@ -29,9 +30,11 @@ def main():
     debug = environ.get("MEMEPLONKER_DEBUG", "").strip().lower() in ("1", "true", "yes", "on")
     logging.basicConfig(level=logging.DEBUG if debug else logging.INFO)
     root = Tk()
-    # Force UTF-8 at the Tcl/Tk boundary so accented / special characters
-    # (é, ç, ...) are handled correctly regardless of the OS locale.
-    root.tk.call("encoding", "system", "utf-8")
+    # NOTE: do NOT override Tcl's system encoding here. On Tk 8.6 (Windows) the
+    # OS delivers characters through the ANSI (cp1252) narrow-char path; forcing
+    # it to "utf-8" misdecodes typed accents (é è ê ë), which is the opposite of
+    # what we want. The cp1252 default already covers Western-European accents,
+    # and Python/PIL keep the text as proper Unicode for the saved image.
     root.configure(bg=WIN98_DESKTOP)
 
     # Calculate the window ratio depending on the screen size
@@ -139,6 +142,52 @@ def main():
     left_frame.pack_propagate(False)
     left_frame.config(width=toolbar_width)
     canvas.config(width=config.WIDTH - toolbar_width)
+
+    # Bottom-right resize grip: drag to freely resize the window/working area,
+    # clamped to the configured minimum and maximum (the window is otherwise fixed
+    # via resizable(0, 0), so we drive the config-based layout ourselves).
+    grip_size = config.HANDLE_SIZE + 8
+    grip = Canvas(root, width=grip_size, height=grip_size, bg=WIN98_FACE,
+                  highlightthickness=0, cursor="bottom_right_corner")
+    # Classic Windows 98 sizegrip: diagonal white highlight + gray shadow lines.
+    for line_offset in range(3, grip_size, 4):
+        grip.create_line(grip_size, line_offset, line_offset, grip_size, fill="white")
+        grip.create_line(grip_size, line_offset + 1, line_offset + 1, grip_size, fill="#808080")
+    grip.place(relx=1.0, rely=1.0, anchor="se")
+
+    resize_origin: dict[str, tuple[int, int, int, int]] = {}
+
+    def raise_grip():
+        # Canvas.lift() is shadowed by tag_raise (which raises canvas *items* and
+        # needs an id), so raise the grip *widget* in the window stacking order.
+        grip.tk.call("raise", grip._w)
+
+    def start_window_resize(event):
+        resize_origin["at"] = (event.x_root, event.y_root, config.WIDTH, config.HEIGHT)
+
+    def do_window_resize(event):
+        if "at" not in resize_origin:
+            return
+        start_x, start_y, start_w, start_h = resize_origin["at"]
+        config.WIDTH = max(config.MINIMUM_WIDTH,
+                           min(config.MAXIMUM_WIDTH, start_w + event.x_root - start_x))
+        config.HEIGHT = max(config.MINIMUM_HEIGHT,
+                            min(config.MAXIMUM_HEIGHT, start_h + event.y_root - start_y))
+        # Lightweight live update (avoids the toolbar re-pack flicker of a full
+        # refresh); the canvas keeps everything to the right of the fixed toolbar.
+        canvas.config(width=config.WIDTH - config.LEFT_FRAME_WIDTH, height=config.HEIGHT)
+        left_frame.config(height=config.HEIGHT)
+        root.geometry(f"{config.WIDTH}x{config.HEIGHT}")
+        raise_grip()
+
+    def end_window_resize(event):
+        resize_origin.clear()
+        refresh_panels(root, left_frame, button_frame, canvas)
+        raise_grip()
+
+    grip.bind("<ButtonPress-1>", start_window_resize)
+    grip.bind("<B1-Motion>", do_window_resize)
+    grip.bind("<ButtonRelease-1>", end_window_resize)
 
     root.mainloop()
 
