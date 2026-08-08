@@ -93,6 +93,20 @@ uv run ruff format .      # format
 
 [PyInstaller](https://pyinstaller.org/) packages the app into a single native executable. **Build on the OS you want to target** — building on Windows produces `plonker.exe`, building on Debian/Linux produces a `plonker` binary (there is no cross-compiling). The command bundles the icons and sounds (`src/`) *inside* the executable; the meme library stays external because of its size.
 
+> **Required on Debian/Linux — install Tk before building.** PyInstaller can only bundle Tkinter if the Python you build with can `import tkinter`; otherwise the built app launches and immediately dies with `No module named tkinter`. Tk is a separate OS package there:
+>
+> ```sh
+> sudo apt install python3-tk
+> ```
+>
+> Then confirm the interpreter you build with actually sees it before running PyInstaller:
+>
+> ```sh
+> uv run python -c "import tkinter; print('tk', tkinter.TkVersion)"
+> ```
+>
+> (macOS: `brew install python-tk`. Windows bundles Tk already, so no extra step.) If the check fails under `uv run`, your uv-managed Python was built without Tk — build with the system `python3` instead, or install a uv Python that includes it.
+
 **Windows** (note the `;` in `--add-data`):
 
 ```sh

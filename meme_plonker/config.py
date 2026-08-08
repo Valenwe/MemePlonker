@@ -265,8 +265,12 @@ class Config:
         self.MAXIMUM_HEIGHT = int(screen_height * 0.8)
         self.WIDTH = self.MAXIMUM_WIDTH // 5
         self.HEIGHT = self.MAXIMUM_HEIGHT // 2
-        self.MINIMUM_WIDTH = self.WIDTH
-        self.MINIMUM_HEIGHT = self.HEIGHT
+        # Low floors so the window can shrink well below the default. MINIMUM_WIDTH
+        # doubles as the smallest visible canvas strip; MINIMUM_HEIGHT is raised to
+        # exactly one button row in main() once the button size is known, because
+        # the toolbar reflows its buttons into extra columns when it gets shorter.
+        self.MINIMUM_WIDTH = 25
+        self.MINIMUM_HEIGHT = 25
         self.LEFT_FRAME_WIDTH = self.WIDTH // 5
 
     def load_resized_icon(self, path: Path) -> ImageTk.PhotoImage:

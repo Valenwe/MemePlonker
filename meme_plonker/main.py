@@ -100,48 +100,100 @@ def main():
                         relief="solid", bd=1)
     tooltip_label.place_forget()
 
-    # All buttons widgets
+    # All button widgets. They are gridded (not packed) by relayout_toolbar below,
+    # so when the window is too short to stack them in one column they reflow into
+    # extra columns and the toolbar widens to keep every button visible.
     memes_button = Button(button_frame, image=memes_icon, command=lambda: MemeBrowser(
         root, left_frame, button_frame, canvas))
-    setup_widget(memes_button, tooltip_label, "Browse meme library")
+    setup_widget(memes_button, tooltip_label, "Browse meme library", packing=False)
 
     image_button = Button(button_frame, image=image_icon,
                         command=lambda: open_image(root, left_frame, button_frame, canvas))
-    setup_widget(image_button, tooltip_label, "Add image")
+    setup_widget(image_button, tooltip_label, "Add image", packing=False)
 
     text_button = Button(button_frame, image=text_icon,
                         command=lambda: add_text(canvas))
-    setup_widget(text_button, tooltip_label, "Add text")
+    setup_widget(text_button, tooltip_label, "Add text", packing=False)
 
     bring_up_button = Button(button_frame, image=bring_up_icon,
                         command=lambda: bring_up(canvas))
-    setup_widget(bring_up_button, tooltip_label, "Bring selected item to the foreground")
+    setup_widget(bring_up_button, tooltip_label, "Bring selected item to the foreground", packing=False)
 
     crop_button = Button(button_frame, image=crop_icon,
                         command=lambda: auto_crop(root, left_frame, button_frame, canvas))
-    setup_widget(crop_button, tooltip_label, "Auto crop working zone")
+    setup_widget(crop_button, tooltip_label, "Auto crop working zone", packing=False)
 
     delete_button = Button(button_frame, image=delete_icon,
                         command=lambda: delete_object(canvas))
-    setup_widget(delete_button, tooltip_label, "Delete object")
+    setup_widget(delete_button, tooltip_label, "Delete object", packing=False)
     root.bind("<Delete>", lambda e: delete_object(canvas))
 
     save_button = Button(button_frame, image=save_icon,
                         command=lambda: save_canvas_as_image(canvas))
-    setup_widget(save_button, tooltip_label, "Save image")
+    setup_widget(save_button, tooltip_label, "Save image", packing=False)
 
     exit_button = Button(button_frame, image=exit_icon,
                         command=lambda: exit(0))
-    setup_widget(exit_button, tooltip_label, "Exit")
+    setup_widget(exit_button, tooltip_label, "Exit", packing=False)
 
-    # Shrink the toolbar to exactly fit the buttons and hand the freed width to
-    # the canvas, so no desktop background shows to the right of the buttons.
-    root.update_idletasks()
-    toolbar_width = button_frame.winfo_reqwidth() + 2 * int(left_frame.cget("bd"))
-    config.LEFT_FRAME_WIDTH = toolbar_width
+    toolbar_buttons = [memes_button, image_button, text_button, bring_up_button,
+                       crop_button, delete_button, save_button, exit_button]
+
+    # --- Reflowing toolbar --------------------------------------------------
+    btn_padx, btn_pady = 6, 4
+    border = 2 * int(left_frame.cget("bd"))
     left_frame.pack_propagate(False)
-    left_frame.config(width=toolbar_width)
-    canvas.config(width=config.WIDTH - toolbar_width)
+
+    root.update_idletasks()  # so the buttons report their real icon size
+    slot_w = toolbar_buttons[0].winfo_reqwidth() + 2 * btn_padx
+    slot_h = toolbar_buttons[0].winfo_reqheight() + 2 * btn_pady
+
+    # The window may shrink until only one row of buttons is left; below that the
+    # buttons reflow sideways instead of disappearing.
+    config.MINIMUM_HEIGHT = slot_h + border
+    canvas_min = config.MINIMUM_WIDTH  # smallest slice of canvas kept visible
+
+    toolbar_state = {"rows": 0}
+
+    def reflow_buttons(available_height: int) -> None:
+        """Grid the buttons to fit the height and size the toolbar.
+
+        Sets config.LEFT_FRAME_WIDTH but leaves the window/canvas width alone, so a
+        caller can settle the toolbar width for a target height *before* it sizes the
+        window (auto-crop relies on this to hug the content exactly).
+        """
+        rows = max(1, int(available_height) // slot_h)
+        if rows == toolbar_state["rows"]:
+            return
+        toolbar_state["rows"] = rows
+        for index, button in enumerate(toolbar_buttons):
+            button.grid_configure(row=index % rows, column=index // rows,
+                                  padx=btn_padx, pady=btn_pady)
+        columns = -(-len(toolbar_buttons) // rows)  # ceil division
+        config.LEFT_FRAME_WIDTH = columns * slot_w + border
+        left_frame.config(width=config.LEFT_FRAME_WIDTH)
+
+    def relayout_toolbar(available_height: int) -> None:
+        """Reflow the toolbar, then keep the window wide enough to show it plus a
+        little canvas and resize the canvas to fill the rest."""
+        reflow_buttons(available_height)
+        # Keep the window wide enough for the whole toolbar plus a little canvas so
+        # the reflowed buttons are never clipped.
+        min_total = config.LEFT_FRAME_WIDTH + canvas_min
+        if config.WIDTH < min_total:
+            config.WIDTH = min(config.MAXIMUM_WIDTH, min_total)
+            root.geometry(f"{config.WIDTH}x{config.HEIGHT}")
+        canvas.config(width=max(1, config.WIDTH - config.LEFT_FRAME_WIDTH))
+
+    # Let canvas_operations (auto-crop / add image) settle the toolbar width for a
+    # new height before it sizes the window.
+    config.reflow_buttons = reflow_buttons
+
+    # Re-flow on any height change (grip drag, auto-crop, add image all resize
+    # left_frame). Drive it off config.HEIGHT — the authoritative value, since the
+    # window resizes only through our own code — so every path stays consistent.
+    left_frame.bind("<Configure>", lambda event: relayout_toolbar(config.HEIGHT))
+    relayout_toolbar(config.HEIGHT)  # initial layout
 
     # Bottom-right resize grip: drag to freely resize the window/working area,
     # clamped to the configured minimum and maximum (the window is otherwise fixed
@@ -174,15 +226,17 @@ def main():
         config.HEIGHT = max(config.MINIMUM_HEIGHT,
                             min(config.MAXIMUM_HEIGHT, start_h + event.y_root - start_y))
         # Lightweight live update (avoids the toolbar re-pack flicker of a full
-        # refresh); the canvas keeps everything to the right of the fixed toolbar.
-        canvas.config(width=config.WIDTH - config.LEFT_FRAME_WIDTH, height=config.HEIGHT)
-        left_frame.config(height=config.HEIGHT)
+        # refresh). relayout_toolbar reflows the buttons and sets the toolbar/canvas
+        # widths (growing the window if the buttons wrapped).
+        canvas.config(height=config.HEIGHT)
         root.geometry(f"{config.WIDTH}x{config.HEIGHT}")
+        relayout_toolbar(config.HEIGHT)
         raise_grip()
 
     def end_window_resize(event):
         resize_origin.clear()
         refresh_panels(root, left_frame, button_frame, canvas)
+        relayout_toolbar(config.HEIGHT)
         raise_grip()
 
     grip.bind("<ButtonPress-1>", start_window_resize)

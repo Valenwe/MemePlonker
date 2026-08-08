@@ -1,6 +1,12 @@
 import logging
+import os
+import shutil
+import subprocess
+import sys
 import tkinter as ttk
 from tkinter import Button, Frame, Label, Text, colorchooser, filedialog, simpledialog
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from PIL import Image, ImageGrab, ImageSequence, ImageTk
 
@@ -9,6 +15,12 @@ from meme_plonker.canvas_selection import clear_selection_box, create_selection_
 from meme_plonker.config import WIN98_FACE, Config, TkObject
 
 logger: logging.Logger = logging.getLogger(__name__)
+
+# Tabs are expanded to this many spaces when text is entered. Tk renders tab stops
+# on the canvas, but PIL's ImageDraw has no tab handling, so a literal "\t" would
+# render differently (or as a missing-glyph box) in the saved image. Normalising to
+# spaces up front keeps the on-screen preview and the export identical.
+TAB_WIDTH = 4
 
 
 def refresh_panels(root: ttk.Tk, left_frame: ttk.Frame, button_frame: ttk.Frame, canvas: ttk.Canvas) -> None:
@@ -178,22 +190,82 @@ def finalize_transform(event, canvas: ttk.Canvas):
 
 
 def on_paste(event, root: ttk.Tk, left_frame: ttk.Frame, button_frame: ttk.Frame, canvas: ttk.Canvas):
-    """Pasting image detection (raw bitmap or copied image files)."""
+    """Paste from the clipboard: a raw bitmap, or copied image/GIF *files*.
+
+    A copied file is imported exactly like using "Add image" (animated GIFs keep
+    playing). Windows/macOS expose the copied files through ImageGrab; on Linux
+    that returns nothing, so we read the clipboard's file list ourselves.
+    """
     content = ImageGrab.grabclipboard()
 
+    # A raw bitmap (e.g. "Copy image" from a browser): a single still frame.
     if isinstance(content, Image.Image):
         logger.info("Pasting bitmap image from clipboard.")
         process_new_image(content, root, left_frame, button_frame, canvas)
-    elif isinstance(content, list):
-        # Windows copies files as a list of paths; add every readable image.
-        for path in content:
-            try:
-                image = Image.open(path)
-            except (OSError, ValueError):
-                logger.warning("Clipboard file is not an image: %s", path)
+        return
+
+    # Otherwise, copied files. Use the paths ImageGrab gave us (Windows/macOS) or,
+    # failing that, the ones we read off the clipboard directly (Linux).
+    paths = content if isinstance(content, list) else _clipboard_file_paths(root)
+
+    pasted = 0
+    for path in paths:
+        try:
+            image = Image.open(path)
+        except (OSError, ValueError):
+            logger.warning("Clipboard file is not an image: %s", path)
+            continue
+        logger.info("Pasting image file from clipboard: %s", path)
+        process_new_image(image, root, left_frame, button_frame, canvas)
+        pasted += 1
+
+    if not pasted:
+        logger.info("Clipboard has no image or image file to paste.")
+
+
+def _clipboard_file_paths(root: ttk.Tk) -> list[str]:
+    """Best-effort list of local files sitting on the clipboard.
+
+    Windows/macOS surface copied files via ImageGrab.grabclipboard(); Linux does
+    not, so ask the clipboard for its ``text/uri-list`` (file managers put
+    ``file://`` URIs there) and fall back to plain-text paths. Only entries that
+    actually exist on disk are returned, so copied *text* is never mistaken for a
+    path.
+    """
+    candidates: list[str] = []
+
+    if sys.platform.startswith("linux"):
+        for command in (["wl-paste", "-t", "text/uri-list"],
+                        ["xclip", "-selection", "clipboard", "-t", "text/uri-list", "-o"]):
+            if not shutil.which(command[0]):
                 continue
-            logger.info("Pasting image file from clipboard: %s", path)
-            process_new_image(image, root, left_frame, button_frame, canvas)
+            try:
+                result = subprocess.run(command, capture_output=True, timeout=5)
+            except (OSError, subprocess.SubprocessError):
+                continue
+            text = result.stdout.decode("utf-8", "replace")
+            if text.strip():
+                candidates = text.splitlines()
+                break
+
+    # Fallback (and the whole story on non-Linux): whatever text the clipboard
+    # holds, one path per line.
+    if not candidates:
+        try:
+            candidates = root.clipboard_get().splitlines()
+        except ttk.TclError:
+            return []
+
+    paths: list[str] = []
+    for line in candidates:
+        line = line.strip()
+        if not line or line.startswith("#"):  # uri-list comment lines start with '#'
+            continue
+        if line.startswith("file://"):
+            line = url2pathname(urlparse(line).path)
+        if os.path.exists(line):
+            paths.append(line)
+    return paths
 
 
 def delete_object(canvas: ttk.Canvas):
@@ -262,7 +334,9 @@ class TextColorDialog(simpledialog.Dialog):
 
     def apply(self):
         # "end-1c" drops the trailing newline Tk keeps at the end of a Text widget.
-        self.result = (self.entry.get("1.0", "end-1c"), self.chosen_color)
+        # expandtabs keeps tabs consistent between the preview and the saved image.
+        text = self.entry.get("1.0", "end-1c").expandtabs(TAB_WIDTH)
+        self.result = (text, self.chosen_color)
 
 
 def add_text(canvas: ttk.Canvas):
@@ -327,22 +401,29 @@ def bring_up(canvas: ttk.Canvas):
 
 
 def auto_crop(root: ttk.Tk, left_frame: ttk.Frame, button_frame: ttk.Frame, canvas: ttk.Canvas):
-    """Auto crop the canvas working zone."""
+    """Auto crop the canvas working zone to hug the content on all sides."""
     config = Config()
     config.crop.play()
-    maximum_width = 0
-    maximum_height = 0
 
+    # Rightmost / lowest content edges, in canvas coordinates.
+    content_width = 0
+    content_height = 0
     for obj in config.objects:
-        _x1, _y1, x2, y2 = canvas.bbox(obj.id)
-        x2 = min(config.MAXIMUM_WIDTH, x2 + config.LEFT_FRAME_WIDTH)
-        y2 = min(config.MAXIMUM_HEIGHT, y2)
-        if x2 > maximum_width:
-            maximum_width = x2
-        if y2 > maximum_height:
-            maximum_height = y2
+        bbox = canvas.bbox(obj.id)
+        if not bbox:
+            continue
+        _x1, _y1, x2, y2 = bbox
+        content_width = max(content_width, x2)
+        content_height = max(content_height, y2)
 
-    # Make that the auto crop doesnt go below the minimum
-    config.HEIGHT = max(config.MINIMUM_HEIGHT, maximum_height)
-    config.WIDTH = max(config.MINIMUM_WIDTH, maximum_width)
+    # Set the height first, then settle the toolbar width for that height BEFORE
+    # sizing the window. The toolbar reflows into more/fewer columns depending on
+    # the height, so its width isn't known until the height is fixed; computing the
+    # window width with a stale toolbar width is what left a white gap on the right.
+    config.HEIGHT = min(config.MAXIMUM_HEIGHT, max(config.MINIMUM_HEIGHT, content_height))
+    reflow = getattr(config, "reflow_buttons", None)
+    if reflow:
+        reflow(config.HEIGHT)
+    config.WIDTH = min(config.MAXIMUM_WIDTH,
+                       max(config.MINIMUM_WIDTH, config.LEFT_FRAME_WIDTH + content_width))
     refresh_panels(root, left_frame, button_frame, canvas)
